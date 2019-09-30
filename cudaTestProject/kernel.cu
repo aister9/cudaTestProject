@@ -1,121 +1,128 @@
-
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "rmg.h"
+#include <direct.h>
+#include "ArrayQueue.h"
 
-#include <stdio.h>
+#define LAST_FILE_NUMBER 10
+#define MATRIX_W 3840
+#define MATRIX_H 2160
+#define QUEUE_CAPACITY 6
 
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
+#define PREPROCESS false
 
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
+__global__ void addSample(int *inputData,int *gpuMap,int *outputData, int w, int h);
+
+int main() {
+	srand((unsigned int)time(NULL));
+
+#if PREPROCESS == true
+	if (mkdir("matrixs") == -1) {
+		printf("Folder is already exist..\n");
+	}
+
+	cout << "Random Matrix Generation ... ";
+	for (int i = 0; i < LAST_FILE_NUMBER; i++) {
+		string filename = "matrixs\\matrix " + to_string(i) + ".txt";
+		random_matrix_generator(filename, MATRIX_W, MATRIX_H);
+		int persentage = (double)i / (double)10 * 100;
+		if (persentage % 25 == 0) cout << persentage << "% ... ";
+	}
+	cout << "Complete" << endl;
+#endif
+
+	int *gpuMap; int *inputData[QUEUE_CAPACITY]; int *outputData[QUEUE_CAPACITY];
+	for (int i = 0; i < QUEUE_CAPACITY; i++) {
+		cudaMalloc(&inputData[i], sizeof(int) * MATRIX_W * MATRIX_H);
+		cudaMalloc(&outputData[i], sizeof(int) * MATRIX_W * MATRIX_H);
+	}
+	cudaMalloc(&gpuMap, sizeof(int) * MATRIX_W * MATRIX_H);
+	int *cpuMap = new int[MATRIX_W * MATRIX_H];
+
+	for (int i = 0; i < MATRIX_W * MATRIX_H; i++) {
+		cpuMap[i] = rand() % 10;
+	}
+
+	//gpuMap Generate
+	cudaMemcpy(gpuMap, cpuMap, sizeof(int) * MATRIX_W * MATRIX_H, cudaMemcpyHostToDevice);
+	delete[] cpuMap;
+
+	cudaStream_t streams[QUEUE_CAPACITY];
+	for (int i = 0; i < QUEUE_CAPACITY; i++) {
+		cudaStreamCreate(&streams[i]);
+	}
+	ArrayQueue aq; //input Queue
+	ArrayQueue rq; //output Queue
+	aq.resize(QUEUE_CAPACITY);
+	rq.resize(LAST_FILE_NUMBER);
+	//Queue_capacity == 6, MATRIX_W * MATRIX_H * 4 = 31MB * 6 = 186MB
+	//aq + rq = 186+310 = 496MB(2.42% use ram : total ram 20gb)
+	aq.set_array_size_pinned(MATRIX_W, MATRIX_H);
+	rq.set_array_size_pinned(MATRIX_W, MATRIX_H);
+
+	int ind = 0;
+	bool error = false;
+#pragma omp parallel sections
+	{
+#pragma omp section // file read
+		{
+			while (true) {
+				
+				if (aq.isFull()) { //꽉찬상태면 무한루프
+					continue;
+				}
+				//아니면
+				string fname = "matrixs\\matrix " + to_string(ind) + ".txt";;
+				aq.tailAdder(); //다음 큐의 위치로 tail을 이동
+				if (!read_matrix_in_file(fname, aq.getTailData(), MATRIX_W, MATRIX_H)) {
+					cout << "error options" << endl;
+					error = true;
+					break;
+				}
+
+				ind++;
+
+				if (ind == LAST_FILE_NUMBER) {
+					break;
+				}
+			}
+		}
+#pragma omp section // run kernel
+		{
+			int streamInd = 0;
+			while (true) {
+				if (aq.isEmpty()) {
+					if (ind == LAST_FILE_NUMBER) break;
+					else continue;
+				}
+				if (error) break;
+
+				cudaMemcpyAsync(inputData[streamInd], aq.dequeue(), sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyHostToDevice, streams[streamInd]);
+				addSample << <1, 512, 0, streams[streamInd] >> > (inputData[streamInd], gpuMap, outputData[streamInd], MATRIX_W, MATRIX_H);
+				
+				streamInd = (streamInd + 1) % QUEUE_CAPACITY;
+			}
+		}
+	}
+	for (int i = 0; i < QUEUE_CAPACITY; i++) {
+		cudaStreamDestroy(streams[i]);
+	}
+	for (int i = 0; i < QUEUE_CAPACITY; i++) {
+		cudaFree(inputData[i]);
+		cudaFree(outputData[i]);
+	}
+	aq.cudaFreeAllMembers();
+	cudaFree(gpuMap);
 }
 
-int main()
-{
-    const int arraySize = 5;
-    const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    int c[arraySize] = { 0 };
+__global__ void addSample(int *inputData, int *gpuMap, int *outputData, int w, int h) {
+	int tIdx = threadIdx.x;
+	int totalThreads = blockDim.x;
 
-    // Add vectors in parallel.
-    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addWithCuda failed!");
-        return 1;
-    }
+	for (int i = tIdx; i < w*h; i += totalThreads) {
+		outputData[i] = inputData[i] + gpuMap[i];
+	}
 
-    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-        c[0], c[1], c[2], c[3], c[4]);
-
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
-
-    return 0;
+	return;
 }
 
-// Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
-{
-    int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
-    cudaError_t cudaStatus;
-
-    // Choose which GPU to run on, change this on a multi-GPU system.
-    cudaStatus = cudaSetDevice(0);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-        goto Error;
-    }
-
-    // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    // Launch a kernel on the GPU with one thread for each element.
-    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
-
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-    
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    
-    return cudaStatus;
-}
