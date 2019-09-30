@@ -6,15 +6,17 @@
 #include "DS_timer.h"
 
 #define LAST_FILE_NUMBER 10
-#define MATRIX_W 1024
-#define MATRIX_H 1024
+#define MATRIX_W 512
+#define MATRIX_H 512
 #define QUEUE_CAPACITY 6
 
 #define PREPROCESS true
 #define NORMALCASE true
-#define SAVEFORMAT 1 //0 is File, 1 is Vector
+#define CASEMODE 0 // 0 is Matrix Sum, 1 is Matrix Multiplication
+#define SAVEFORMAT 0 //0 is File, 1 is Vector
 
 __global__ void addSample(int *inputData,int *gpuMap,int *outputData, int w, int h);
+__global__ void matrixMultiSample(int *inputData, int *gpuMap, int *outputData, int w, int h);
 
 int main() {
 	srand((unsigned int)time(NULL));
@@ -83,6 +85,11 @@ int main() {
 	vector<int *> case1_Vector;
 	vector<int *> case2_Vector;
 
+#if CASEMODE == 1
+	dim3 bDim(16, 16); // 256 threads per block
+	dim3 gDim(ceil((float)MATRIX_W / 16.0), ceil((float)MATRIX_H / 16.0));
+#endif
+
 	//////////////////////////////////////////////////////////////////////////
 	/*Concurrent Kernel*/
 	caseTimer.onTimer(0);
@@ -124,7 +131,12 @@ int main() {
 				if (aq.chk != aq.tail) continue;
 				
 				cudaMemcpyAsync(inputData[streamInd], aq.dequeue(), sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyHostToDevice, streams[streamInd]);
+#if CASEMODE == 0
 				addSample << <1, 512, 0, streams[streamInd] >> > (inputData[streamInd], gpuMap, outputData[streamInd], MATRIX_W, MATRIX_H);
+#elif CASEMODE == 1
+				matrixMultiSample << <gDim, bDim, 0, streams[streamInd] >> > (inputData[streamInd], gpuMap, outputData[streamInd], MATRIX_W, MATRIX_H);
+#endif
+				
 				while (rq.isFull()) {
 					continue;
 				}
@@ -175,15 +187,33 @@ int main() {
 		string outfname = "case2-output\\result " + to_string(i) + ".txt";
 		int *inputMatrix = new int[MATRIX_W*MATRIX_H];
 		int *outputMatrix = new int[MATRIX_W*MATRIX_H];
+		DS_timer tm(5);
+		tm.setTimerName(0, "File Read");
+		tm.setTimerName(1, "HtoD");
+		tm.setTimerName(2, "Kernel");
+		tm.setTimerName(3, "DtoH");
+		tm.setTimerName(4, "File Save");
+		tm.onTimer(0);
 		if (!read_matrix_in_file(openfname, inputMatrix, MATRIX_W, MATRIX_H)) {
 			cout << "error options" << endl;
 			break;
 		}
+		tm.offTimer(0);
+		tm.onTimer(1);
 		cudaMemcpy(inputData[0], inputMatrix, sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyHostToDevice);
+		tm.offTimer(1);
+		tm.onTimer(2);
+#if CASEMODE == 0
 		addSample << <1, 512 >> > (inputData[0], gpuMap, outputData[0], MATRIX_W, MATRIX_H);
+#elif CASEMODE == 1
+		matrixMultiSample<<<gDim, bDim>>> (inputData[0], gpuMap, outputData[0], MATRIX_W, MATRIX_H);
+#endif
 		cudaDeviceSynchronize();
+		tm.offTimer(2);
+		tm.onTimer(3);
 		cudaMemcpy(outputMatrix, outputData[0], sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyDeviceToHost);
-
+		tm.offTimer(3);
+		tm.onTimer(4);
 #if SAVEFORMAT == 0
 		if (!record_matrix_in_file(outfname, outputMatrix, MATRIX_W, MATRIX_H)) {
 			cout << "error options : can`t record matrix" << endl;
@@ -193,6 +223,8 @@ int main() {
 #elif SAVEFORMAT == 1
 		case2_Vector.push_back(outputMatrix);
 #endif	
+		tm.offTimer(4);
+		tm.printTimer();
 		
 	}
 #endif
@@ -207,6 +239,12 @@ int main() {
 
 	ofstream timerlog;
 	timerlog.open("Timer Log.txt", ios::app);
+
+#if CASEMODE == 0
+	timerlog << "CASE : ADD SAMPLE" << endl;
+#elif CASEMODE == 1
+	timerlog << "CASE : MATRIX MULTIPLICATION SAMPLE" << endl;
+#endif
 
 #if SAVEFORMAT == 0
 	timerlog << "MODE : OUTPUT FILE" << endl;
@@ -241,3 +279,20 @@ __global__ void addSample(int *inputData, int *gpuMap, int *outputData, int w, i
 	return;
 }
 
+__global__ void matrixMultiSample(int *inputData, int *gpuMap, int *outputData, int w, int h) {
+	int row = threadIdx.y + blockDim.y*blockIdx.y;
+	int col = threadIdx.x + blockDim.x*blockIdx.x;
+	int ind = row * w + col;
+
+	outputData[ind] = 0;
+
+	if (row >= h || col >= w) {
+		return;
+	}
+
+	for (int k = 0; k < h; k++) {
+		outputData[ind] += inputData[row*h+k] + gpuMap[k*w+col];
+	}
+
+	return;
+}
