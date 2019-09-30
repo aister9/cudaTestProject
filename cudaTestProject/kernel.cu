@@ -18,7 +18,10 @@ int main() {
 
 #if PREPROCESS == true
 	if (mkdir("matrixs") == -1) {
-		printf("Folder is already exist..\n");
+		printf("matrixs: Folder is already exist..\n");
+	}
+	if (mkdir("output") == -1) {
+		printf("output: Folder is already exist..\n");
 	}
 
 	cout << "Random Matrix Generation ... ";
@@ -99,8 +102,26 @@ int main() {
 
 				cudaMemcpyAsync(inputData[streamInd], aq.dequeue(), sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyHostToDevice, streams[streamInd]);
 				addSample << <1, 512, 0, streams[streamInd] >> > (inputData[streamInd], gpuMap, outputData[streamInd], MATRIX_W, MATRIX_H);
-				
+				while (rq.isFull()) {
+					continue;
+				}
+				rq.tailAdder();
+				cudaMemcpyAsync(rq.getTailData(), outputData[streamInd], sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyDeviceToHost, streams[streamInd]);
+
 				streamInd = (streamInd + 1) % QUEUE_CAPACITY;
+			}
+		}
+#pragma omp section //file output
+		{
+			int resultInd = 0;
+			while (true) {
+				if (rq.isEmpty()) {
+					if (ind == LAST_FILE_NUMBER) break;
+					else continue;
+				}
+
+				string filename = "output\\result " + to_string(resultInd) + ".txt";
+				record_matrix_in_file(filename, rq.dequeue(), MATRIX_W, MATRIX_H);
 			}
 		}
 	}

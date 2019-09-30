@@ -10,6 +10,7 @@ using namespace std;
 
 bool random_matrix_generator(string filename, int width, int height);
 bool read_matrix_in_file(string filename, int *arrayData, int w, int h);
+bool record_matrix_in_file(string filename, int *arryData, int w, int h);
 
 
 bool random_matrix_generator(string filename, int width, int height) {
@@ -32,6 +33,35 @@ bool random_matrix_generator(string filename, int width, int height) {
 
 			newfile << dice_roll;
 			if (x != width - 1) {
+				newfile << " ";
+			}
+		}
+		newfile << endl;
+	}
+
+	newfile.close();
+
+	return true;
+}
+
+bool record_matrix_in_file(string filename, int *arryData, int w, int h) {
+	ofstream newfile;
+	newfile.open(filename);
+
+	if (!newfile.is_open()) {
+		cout << "file open error!!" << endl;
+		newfile.close();
+		return false;
+	}
+
+
+	newfile << h << " " << w << endl;
+
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+
+			newfile << arryData[y*w+x];
+			if (x != w - 1) {
 				newfile << " ";
 			}
 		}
