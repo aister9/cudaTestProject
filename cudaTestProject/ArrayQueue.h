@@ -6,13 +6,14 @@ using namespace std;
 
 class ArrayQueue {
 private:
-	vector<int *> data;
-	int tail = 0;
-	int head = 0;
 	int width = 0;
 	int height = 0;
 	int capacity = 0;
 public:
+	vector<int *> data;
+	int tail = 0;
+	int head = 0;
+
 	ArrayQueue() {
 	}
 	void resize(const int &capacity);
@@ -35,20 +36,20 @@ void ArrayQueue::resize(const int &capacity) {
 void ArrayQueue::set_array_size(const int &width, const int &height) {
 	this->width = width;
 	this->height = height;
-	for (int *arrays : data) {
-		arrays = new int[width*height];
+	for (int i = 0; i < data.size(); i++) {
+		data[i] = new int[width*height];
 	}
 }
 void ArrayQueue::set_array_size_pinned(const int &width, const int &height) {
 	this->width = width;
 	this->height = height;
-	for (int *arrays : data) {
-		cudaMallocHost(&arrays, sizeof(int)*width*height);
+	for (int i = 0; i < data.size(); i++) {
+		cudaMallocHost(&data[i], sizeof(int)*width*height);
 	}
 }
 void ArrayQueue::cudaFreeAllMembers() {
-	for (int *arrays : data) {
-		cudaFreeHost(arrays);
+	for (int i = 0; i < data.size(); i++) {
+		cudaFreeHost(data[i]);
 	}
 }
 
