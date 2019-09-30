@@ -13,6 +13,7 @@ public:
 	vector<int *> data;
 	int tail = 0;
 	int head = 0;
+	int chk = 0;
 
 	ArrayQueue() {
 	}
@@ -26,6 +27,7 @@ public:
 	bool isEmpty();
 	int* getTailData();
 	void tailAdder();
+	int currentQueueSize();
 };
 
 void ArrayQueue::resize(const int &capacity) {
@@ -53,6 +55,9 @@ void ArrayQueue::cudaFreeAllMembers() {
 	}
 }
 
+int ArrayQueue::currentQueueSize() {
+	return abs(tail - head);
+}
 int* ArrayQueue::getTailData() {
 	if (isEmpty()) return nullptr;
 	return data[tail];

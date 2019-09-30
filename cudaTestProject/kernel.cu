@@ -3,13 +3,16 @@
 #include "rmg.h"
 #include <direct.h>
 #include "ArrayQueue.h"
+#include "DS_timer.h"
 
 #define LAST_FILE_NUMBER 10
-#define MATRIX_W 512
-#define MATRIX_H 512
+#define MATRIX_W 1024
+#define MATRIX_H 1024
 #define QUEUE_CAPACITY 6
 
 #define PREPROCESS true
+#define NORMALCASE true
+#define SAVEFORMAT 1 //0 is File, 1 is Vector
 
 __global__ void addSample(int *inputData,int *gpuMap,int *outputData, int w, int h);
 
@@ -22,6 +25,9 @@ int main() {
 	}
 	if (mkdir("output") == -1) {
 		printf("output: Folder is already exist..\n");
+	}
+	if (mkdir("case2-output") == -1) {
+		printf("case2-output: Folder is already exist..\n");
 	}
 
 	cout << "Random Matrix Generation ... ";
@@ -45,17 +51,19 @@ int main() {
 	for (int i = 0; i < MATRIX_W * MATRIX_H; i++) {
 		cpuMap[i] = rand() % 10;
 	}
+	record_matrix_in_file("cpumap.txt", cpuMap, MATRIX_W, MATRIX_H);
 
 	//gpuMap Generate
 	cudaMemcpy(gpuMap, cpuMap, sizeof(int) * MATRIX_W * MATRIX_H, cudaMemcpyHostToDevice);
 	delete[] cpuMap;
 
 	cudaStream_t streams[QUEUE_CAPACITY];
-	cudaEvent_t isEnd[QUEUE_CAPACITY];
+	cudaEvent_t isEnd[LAST_FILE_NUMBER];
 	for (int i = 0; i < QUEUE_CAPACITY; i++) {
 		cudaStreamCreate(&streams[i]);
-		cudaEventCreate(&isEnd[i]);
 	}
+	for (int i = 0; i < LAST_FILE_NUMBER; i++)
+		cudaEventCreate(&isEnd[i]);
 	ArrayQueue aq; //input Queue
 	ArrayQueue rq; //output Queue
 	aq.resize(QUEUE_CAPACITY);
@@ -67,6 +75,17 @@ int main() {
 
 	int ind = 0;
 	bool error = false;
+
+	DS_timer caseTimer(2);
+	caseTimer.initTimers();
+	caseTimer.setTimerName(0, "Use Concurrent Kernel(Heterogeneous parallel)");
+	caseTimer.setTimerName(1, "Use Normal Case(1 Kernel "+to_string(LAST_FILE_NUMBER)+" LOOP)");
+	vector<int *> case1_Vector;
+	vector<int *> case2_Vector;
+
+	//////////////////////////////////////////////////////////////////////////
+	/*Concurrent Kernel*/
+	caseTimer.onTimer(0);
 #pragma omp parallel sections
 	{
 #pragma omp section // file read
@@ -77,14 +96,14 @@ int main() {
 					continue;
 				}
 				//아니면
-				string fname = "matrixs\\matrix " + to_string(ind) + ".txt";;
+				string fname = "matrixs\\matrix " + to_string(ind) + ".txt";
 				aq.tailAdder(); //다음 큐의 위치로 tail을 이동
 				if (!read_matrix_in_file(fname, aq.data[aq.tail], MATRIX_W, MATRIX_H)) {
 					cout << "error options" << endl;
 					error = true;
 					break;
 				}
-				cout << "File read complete : " << fname << endl;
+				aq.chk=aq.tail;
 				ind++;
 
 				if (ind == LAST_FILE_NUMBER) {
@@ -95,12 +114,14 @@ int main() {
 #pragma omp section // run kernel
 		{
 			int streamInd = 0;
+			int fileInd = 0;
 			while (true) {
 				if (aq.isEmpty()) {
 					if (ind == LAST_FILE_NUMBER) break;
 					else continue;
 				}
 				if (error) break;
+				if (aq.chk != aq.tail) continue;
 				
 				cudaMemcpyAsync(inputData[streamInd], aq.dequeue(), sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyHostToDevice, streams[streamInd]);
 				addSample << <1, 512, 0, streams[streamInd] >> > (inputData[streamInd], gpuMap, outputData[streamInd], MATRIX_W, MATRIX_H);
@@ -109,7 +130,7 @@ int main() {
 				}
 				rq.tailAdder();
 				cudaMemcpyAsync(rq.getTailData(), outputData[streamInd], sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyDeviceToHost, streams[streamInd]);
-				cudaEventRecord(isEnd[streamInd], streams[streamInd]);
+				cudaEventRecord(isEnd[fileInd++], streams[streamInd]);
 
 				streamInd = (streamInd + 1) % QUEUE_CAPACITY;
 			}
@@ -117,30 +138,85 @@ int main() {
 #pragma omp section //file output
 		{
 			int resultInd = 0;
-			bool calcEnd = false;
 			while (true) {
 				if (rq.isEmpty()) {
 					if (ind == LAST_FILE_NUMBER) break;
 					else continue;
 				}
+				if (cudaEventQuery(isEnd[resultInd]) != cudaSuccess) continue;
 				
-				for (int j = 0; j < QUEUE_CAPACITY; j++) {
-					if (cudaEventQuery(isEnd[j]) == cudaSuccess) {
-						cout << "CUDA stream " << j << "end" << endl;
-						calcEnd = true;
-						break;
-					}
-				}
-				if (calcEnd == false) continue;
-
+#if SAVEFORMAT == 0
 				string filename = "output\\result " + to_string(resultInd) + ".txt";
-				record_matrix_in_file(filename, rq.dequeue(), MATRIX_W, MATRIX_H);
+				if (!record_matrix_in_file(filename, rq.dequeue(), MATRIX_W, MATRIX_H)) {
+					cout << "error options : can`t record matrix" << endl;
+					error = true;
+					break;
+				}
+#elif SAVEFORMAT == 1
+				case1_Vector.push_back(rq.dequeue());
+#endif	
 				resultInd++;
-				calcEnd = false;
 			}
 		}
 	}
+	caseTimer.offTimer(0);
+	//////////////////////////////////////////////////////////////////////////
+	
+	cout << "--------------------------------------------------------" << endl;
+	cout << "CASE 1 END" << endl;
+	cout << "--------------------------------------------------------" << endl;
 
+	//////////////////////////////////////////////////////////////////////////
+	/*NORMAL CASE*/
+	caseTimer.onTimer(1);
+#if NORMALCASE == true
+	for (int i = 0; i < LAST_FILE_NUMBER; i++) {
+		string openfname = "matrixs\\matrix " + to_string(i) + ".txt";
+		string outfname = "case2-output\\result " + to_string(i) + ".txt";
+		int *inputMatrix = new int[MATRIX_W*MATRIX_H];
+		int *outputMatrix = new int[MATRIX_W*MATRIX_H];
+		if (!read_matrix_in_file(openfname, inputMatrix, MATRIX_W, MATRIX_H)) {
+			cout << "error options" << endl;
+			break;
+		}
+		cudaMemcpy(inputData[0], inputMatrix, sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyHostToDevice);
+		addSample << <1, 512 >> > (inputData[0], gpuMap, outputData[0], MATRIX_W, MATRIX_H);
+		cudaDeviceSynchronize();
+		cudaMemcpy(outputMatrix, outputData[0], sizeof(int)*MATRIX_W*MATRIX_H, cudaMemcpyDeviceToHost);
+
+#if SAVEFORMAT == 0
+		if (!record_matrix_in_file(outfname, outputMatrix, MATRIX_W, MATRIX_H)) {
+			cout << "error options : can`t record matrix" << endl;
+			error = true;
+			break;
+		}
+#elif SAVEFORMAT == 1
+		case2_Vector.push_back(outputMatrix);
+#endif	
+		
+	}
+#endif
+	caseTimer.offTimer(1);
+	//////////////////////////////////////////////////////////////////////////
+
+	cout << "--------------------------------------------------------" << endl;
+	cout << "CASE 2 END" << endl;
+	cout << "--------------------------------------------------------" << endl;
+
+	caseTimer.printTimer();
+
+	ofstream timerlog;
+	timerlog.open("Timer Log.txt", ios::app);
+
+#if SAVEFORMAT == 0
+	timerlog << "MODE : OUTPUT FILE" << endl;
+#elif SAVEFORMAT == 1
+	timerlog << "MODE : OUTPUT VECTOR" << endl;
+#endif	
+	timerlog << "MATRIX SIZE : " << MATRIX_W << "X" << MATRIX_H << " - LOOP COUNT : " << LAST_FILE_NUMBER << endl;
+	timerlog.close();
+
+	caseTimer.printToFile("Timer Log.txt");
 
 	for (int i = 0; i < QUEUE_CAPACITY; i++) {
 		cudaStreamDestroy(streams[i]);

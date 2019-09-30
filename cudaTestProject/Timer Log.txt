@@ -1,0 +1,30 @@
+MODE : OUTPUT FILE
+MATRIX SIZE : 512X512 - LOOP COUNT : 10
+Use Concurrent Kernel(Heterogeneous parallel): 10858.434806235
+Use Normal Case(1 Kernel 10 LOOP): 13961.158924416
+
+MODE : OUTPUT VECTOR
+MATRIX SIZE : 512X512 - LOOP COUNT : 10
+Use Concurrent Kernel(Heterogeneous parallel): 6531.204751915
+Use Normal Case(1 Kernel 10 LOOP): 6484.668643218
+
+MODE : OUTPUT VECTOR
+MATRIX SIZE : 512X512 - LOOP COUNT : 15
+Use Concurrent Kernel(Heterogeneous parallel): 9927.872035258
+Use Normal Case(1 Kernel 15 LOOP): 9780.837305892
+
+MODE : OUTPUT FILE
+MATRIX SIZE : 512X512 - LOOP COUNT : 15
+Use Concurrent Kernel(Heterogeneous parallel): 15931.959509599
+Use Normal Case(1 Kernel 15 LOOP): 20843.117102812
+
+MODE : OUTPUT FILE
+MATRIX SIZE : 1024X1024 - LOOP COUNT : 10
+Use Concurrent Kernel(Heterogeneous parallel): 41965.799701128
+Use Normal Case(1 Kernel 10 LOOP): 55191.110502778
+
+MODE : OUTPUT VECTOR
+MATRIX SIZE : 1024X1024 - LOOP COUNT : 10
+Use Concurrent Kernel(Heterogeneous parallel): 27107.913418589
+Use Normal Case(1 Kernel 10 LOOP): 26086.632951972
+
